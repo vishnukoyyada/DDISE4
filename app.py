@@ -1,4 +1,4 @@
-# app.py
+# app.py - Corrected version
 import os
 import random
 import string
@@ -14,24 +14,21 @@ app = Flask(__name__)
 
 # Configuration
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
-# Replace your SQLite config with:
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://yugabyte:yugabyte@yb-tservers.yugabyte.svc.cluster.local:5433/yugabyte')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Connection pool settings for SQLAlchemy
-app.config['SQLALCHEMY_POOL_SIZE'] = 20         # Number of connections to keep in the pool
-app.config['SQLALCHEMY_MAX_OVERFLOW'] = 40      # Extra connections allowed above pool_size
-app.config['SQLALCHEMY_POOL_TIMEOUT'] = 30      # Seconds to wait before giving up on getting a connection
-app.config['SQLALCHEMY_POOL_RECYCLE'] = 1800    # Recycle connections after this many seconds (optional)
-
-
+app.config['SQLALCHEMY_POOL_SIZE'] = 20
+app.config['SQLALCHEMY_MAX_OVERFLOW'] = 40
+app.config['SQLALCHEMY_POOL_TIMEOUT'] = 30
+app.config['SQLALCHEMY_POOL_RECYCLE'] = 1800
 
 db = SQLAlchemy(app)
 
-# Models
+# Models (same as your original)
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(100), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)  # Changed from 100 to 255
+    password = db.Column(db.String(255), nullable=False)
     name = db.Column(db.String(100))
     sales = db.Column(db.Integer, default=0)
     sales_sum = db.Column(db.Float, default=0.0)
@@ -78,7 +75,7 @@ class Sale(db.Model):
 
     seller = db.relationship('User', foreign_keys=[seller_uid], backref='sales_as_seller')
     buyer = db.relationship('User', foreign_keys=[buyer_uid], backref='sales_as_buyer')
-    item = db.relationship('Item', backref='associated_sales')  # Changed backref name
+    item = db.relationship('Item', backref='associated_sales')
 
     def to_dict(self):
         return {
@@ -108,7 +105,9 @@ def token_required(f):
         try:
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
             current_user = User.query.get(data['user_id'])
-        except:
+            if not current_user:
+                return jsonify({'message': 'User not found!'}), 401
+        except Exception as e:
             return jsonify({'message': 'Token is invalid!'}), 401
         
         return f(current_user, *args, **kwargs)
@@ -122,17 +121,17 @@ def random_string(length=10):
 def login():
     auth = request.get_json()
     if not auth or not auth.get('email') or not auth.get('password'):
-        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+        return jsonify({'message': 'Email and password required'}), 401
     
     user = User.query.filter_by(email=auth['email']).first()
     if not user:
-        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+        return jsonify({'message': 'Invalid credentials'}), 401
     
     if check_password_hash(user.password, auth['password']):
         token = jwt.encode({'user_id': user.id}, app.config['SECRET_KEY'], algorithm='HS256')
         return jsonify({'token': token})
     
-    return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+    return jsonify({'message': 'Invalid credentials'}), 401
 
 @app.route('/user/<int:user_id>', methods=['GET'])
 @token_required
@@ -149,7 +148,7 @@ def list_sales(current_user, user_id):
     if not User.query.get(user_id):
         return jsonify({'message': 'User not found'}), 404
     
-    query = Sale.query.filter_by(seller_uid=user_id)
+    query = Sale.query.filter_by(seller_uid=user_id).filter(Sale.buyer_uid.isnot(None))
     
     # Apply filters
     if 'item_title' in request.args:
@@ -199,29 +198,33 @@ def list_offers(current_user):
 @app.route('/offer', methods=['POST'])
 @token_required
 def create_offer(current_user):
-    # Create a new item with random values
-    item = Item(
-        title=random_string(15),
-        description=random_string(50),
-        manufacturer=random_string(10),
-        sales=0
-    )
-    db.session.add(item)
-    db.session.commit()
-    
-    # Create the offer
-    offer = Sale(
-        seller_uid=current_user.id,
-        buyer_uid=None,
-        item_id=item.id,
-        price=round(random.uniform(10, 1000), 2),
-        date_offered=datetime.utcnow(),
-        date_sold=None
-    )
-    db.session.add(offer)
-    db.session.commit()
-    
-    return jsonify(offer.to_dict()), 201
+    try:
+        # Create a new item with random values
+        item = Item(
+            title=random_string(15),
+            description=random_string(50),
+            manufacturer=random_string(10),
+            sales=0
+        )
+        db.session.add(item)
+        db.session.flush()  # Get the item ID
+        
+        # Create the offer
+        offer = Sale(
+            seller_uid=current_user.id,
+            buyer_uid=None,
+            item_id=item.id,
+            price=round(random.uniform(10, 1000), 2),
+            date_offered=datetime.utcnow(),
+            date_sold=None
+        )
+        db.session.add(offer)
+        db.session.commit()
+        
+        return jsonify(offer.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to create offer', 'error': str(e)}), 500
 
 @app.route('/offer/<int:sale_id>/buy', methods=['PUT'])
 @token_required
@@ -252,10 +255,9 @@ def buy_offer(current_user, sale_id):
         seller.balance += sale.price
         
         # Update buyer stats
-        buyer = User.query.get(current_user.id)
-        buyer.purchases += 1
-        buyer.purchases_sum += sale.price
-        buyer.balance -= sale.price
+        current_user.purchases += 1
+        current_user.purchases_sum += sale.price
+        current_user.balance -= sale.price
         
         db.session.commit()
         
@@ -278,7 +280,11 @@ def delete_offer(current_user, sale_id):
         return jsonify({'message': 'Cannot delete a completed sale'}), 400
     
     try:
+        # Also delete the associated item if it was created for this offer
+        item = sale.item
         db.session.delete(sale)
+        if item and item.sales == 0:  # Only delete if no sales occurred
+            db.session.delete(item)
         db.session.commit()
         return jsonify({'message': 'Offer deleted successfully'})
     except Exception as e:
@@ -289,6 +295,32 @@ def delete_offer(current_user, sale_id):
 def health_check():
     return 'OK', 200
 
+# Add these helper endpoints for load testing
+@app.route('/check-balance-consistency')
+def check_balance_consistency():
+    try:
+        total_balance = db.session.query(db.func.sum(User.balance)).scalar() or 0
+        return jsonify({
+            'total_balance': float(total_balance),
+            'is_consistent': abs(total_balance) < 0.01
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/test-stats')
+def test_stats():
+    try:
+        user_count = User.query.count()
+        offer_count = Sale.query.filter_by(buyer_uid=None).count()
+        completed_sales = Sale.query.filter(Sale.buyer_uid.isnot(None)).count()
+        
+        return jsonify({
+            'total_users': user_count,
+            'active_offers': offer_count,
+            'completed_sales': completed_sales
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Error handlers
 @app.errorhandler(401)
@@ -308,20 +340,74 @@ def internal_server_error(e):
     return jsonify({'message': 'Internal server error'}), 500
 
 # Database initialization
+
 with app.app_context():
-    # Drop all tables and recreate (WARNING: This deletes all data!)
-    # db.drop_all()
     db.create_all()
     
-    # Create some test users if none exist
-    if User.query.count() == 0:
-        users = [
-            User(email='user1@example.com', password=generate_password_hash('password1'), name='User One'),
-            User(email='user2@example.com', password=generate_password_hash('password2'), name='User Two'),
-            User(email='user3@example.com', password=generate_password_hash('password3'), name='User Three')
-        ]
-        db.session.bulk_save_objects(users)
-        db.session.commit()
+    # Create 1000 test users for load testing
+    print("Checking/Creating test users...")
+    created_count = 0
+    
+    # Get all existing emails first to minimize database queries in the loop
+    existing_emails = {user.email for user in User.query.with_entities(User.email).all()}
+    
+    for i in range(1, 1001):
+        email = f"user{i}@example.com"
+        if email not in existing_emails:
+            try:
+                user = User(
+                    email=email,
+                    password=generate_password_hash(f"password{i}"),
+                    name=f"Test User {i}",
+                    balance=1000.0  # Give users starting balance for transactions
+                )
+                db.session.add(user)
+                created_count += 1
+                
+                # Commit each user individually to avoid transaction conflicts
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error creating user {email}: {str(e)}")
+                continue
+    
+    print(f"Total users created: {created_count}")
+    
+    # Create some initial offers for testing
+    offer_count = Sale.query.filter_by(buyer_uid=None).count()
+    if offer_count < 50:
+        print("Creating initial offers...")
+        # Get all users at once
+        users = User.query.all()
+        if users:
+            for i in range(50):
+                try:
+                    user = random.choice(users)
+                    item = Item(
+                        title=f"Test Item {random_string(10)}",
+                        description=f"Test Description {random_string(20)}",
+                        manufacturer=f"Test Manufacturer {random_string(5)}",
+                        sales=0
+                    )
+                    db.session.add(item)
+                    db.session.flush()
+                    
+                    offer = Sale(
+                        seller_uid=user.id,
+                        buyer_uid=None,
+                        item_id=item.id,
+                        price=round(random.uniform(10, 500), 2),
+                        date_offered=datetime.utcnow()
+                    )
+                    db.session.add(offer)
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"Error creating offer: {str(e)}")
+                    continue
+        
+        print("Initial offers created.")
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80)

@@ -25,7 +25,7 @@ spec:
             topologyKey: "kubernetes.io/hostname"
       containers:
       - name: flask-api
-        image: europe-west1-docker.pkg.dev/ddis-course/vishnurepo/flask-api:v8
+        image: europe-west1-docker.pkg.dev/ddis-course/vishnurepo/flask-api:v1.1
         ports:
         - containerPort: 8080
         env:
