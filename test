@@ -1,0 +1,5 @@
+# Tag the Docker image
+docker build -t europe-west1-docker.pkg.dev/ddis-course/vishnuepo/flask-api:v1 .
+
+# Push the image
+docker push europe-west1-docker.pkg.dev/ddis-course/vishnurepo/flask-api:v1
