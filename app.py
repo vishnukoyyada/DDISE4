@@ -1,4 +1,10 @@
-# app.py - Corrected version
+# app.py
+# -*- coding: utf-8 -*-
+#Author: koyyada vishnu vardhan
+# Date: 2023-10-01
+# Description: Flask application for YugabyteDB with JWT authentication and CRUD operations.
+# License: MIT License
+
 import os
 import random
 import string
